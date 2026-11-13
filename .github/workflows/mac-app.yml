@@ -1,0 +1,59 @@
+name: Build Mac app
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: mac/.build
+          key: spm-${{ runner.os }}-${{ hashFiles('mac/Package.swift', 'mac/Package.resolved') }}
+
+      - name: Build VRDesktop.app
+        run: mac/scripts/build-app.sh
+
+      - name: Smoke test (starts and serves the web client)
+        run: |
+          mac/build/VRDesktop.app/Contents/MacOS/VRDesktop &
+          PID=$!
+          for i in $(seq 1 20); do
+            if curl -sk https://localhost:8443/ | grep -q "VR Desktop"; then echo "web client served"; break; fi
+            sleep 1
+          done
+          curl -sk https://localhost:8443/ | grep -q "VR Desktop"
+          curl -sk -o /dev/null -w "app.js %{http_code}\n" https://localhost:8443/app.js
+          kill $PID || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VRDesktop-mac
+          path: mac/build/VRDesktop.zip
+
+      - name: Publish "prototype" pre-release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete prototype --yes --cleanup-tag || true
+          gh release create prototype mac/build/VRDesktop.zip \
+            --prerelease --target "$GITHUB_SHA" \
+            --title "Prototyp (${GITHUB_REF_NAME} @ ${GITHUB_SHA::7})" \
+            --notes "Automaticky sestaveno z větve ${GITHUB_REF_NAME}. Návod: README.md"
