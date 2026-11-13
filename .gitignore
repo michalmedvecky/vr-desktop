@@ -4,3 +4,5 @@ mac/build/
 mac/.swiftpm/
 *.xcodeproj/xcuserdata/
 __pycache__/
+tools/node_modules/
+tools/package*.json
