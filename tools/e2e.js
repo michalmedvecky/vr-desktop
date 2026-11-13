@@ -4,7 +4,7 @@
 const { chromium } = require('playwright');
 const url = process.argv[2] || 'https://localhost:8443/';
 (async () => {
-  const browser = await chromium.launch({ args: ['--ignore-certificate-errors'] });
+  const browser = await chromium.launch({ args: ['--ignore-certificate-errors', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
   const page = await browser.newPage({ ignoreHTTPSErrors: true });
   page.on('pageerror', e => console.log('PAGEERROR', e.message));
   page.on('console', m => { if (m.type() === 'error') console.log('console.error', m.text()); });
