@@ -1,0 +1,25 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vr-desktop-server
+  annotations:
+    # cert-manager issues the Let's Encrypt certificate. Change to your ClusterIssuer name.
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    # ingress-nginx: keep the Mac's idle WebSocket open (the server also pings every 25 s).
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [vr.example.com]
+      secretName: vr-desktop-tls
+  rules:
+    - host: vr.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vr-desktop-server
+                port: { name: http }

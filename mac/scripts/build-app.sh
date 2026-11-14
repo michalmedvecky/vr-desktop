@@ -30,6 +30,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleVersion</key><string>${VERSION}</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
+  <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
   <key>NSLocalNetworkUsageDescription</key><string>VR Desktop streamuje okna do brýlí Quest v lokální síti.</string>
   <key>NSScreenCaptureUsageDescription</key><string>VR Desktop zachytává vybraná okna a posílá je do brýlí Quest.</string>
 </dict>
