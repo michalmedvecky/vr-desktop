@@ -29,17 +29,21 @@ function setStatus(t) {
 // ---------------------------------------------------------------------------
 // Three.js scene
 // ---------------------------------------------------------------------------
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+// alpha: the projection layer needs an alpha channel so that window panels can "punch holes"
+// through which the WebXR media layers (rendered by the Quest compositor) show.
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
-renderer.xr.setFramebufferScaleFactor(1.2); // a bit sharper text on Quest 2
-// three.js defaults to maximum fixed foveated rendering, which renders the edges of the view at
-// lower resolution: text there shimmers and becomes unreadable. Text panels need full resolution.
-renderer.xr.setFoveation(0);
 const MAX_ANISOTROPY = renderer.capabilities.getMaxAnisotropy();
+const CLIENT_VERSION = '0.3';
+// Window content is shown with WebXR media layers when the browser supports them (Quest Browser):
+// the compositor samples the video directly at display resolution, which is far sharper and
+// steadier than drawing a video texture into the 3D scene and resampling it again.
+// Add ?nolayers to the URL to force the old video-texture rendering.
+const MEDIA_LAYERS_SUPPORTED = typeof XRMediaBinding !== 'undefined' && !new URLSearchParams(location.search).has('nolayers');
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -109,6 +113,61 @@ function setSelection(ids) { send({ type: 'select', windowIds: ids.slice(0, maxW
 // Panels
 // ---------------------------------------------------------------------------
 const interactive = [];  // meshes the pointers can hit
+
+// Writes transparent black (and depth) so the media layer behind the projection layer shows through.
+const HOLE_MATERIAL = new THREE.ShaderMaterial({
+  vertexShader: 'void main() { gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+  fragmentShader: 'void main() { gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0); }',
+  blending: THREE.NoBlending,
+});
+
+let xrLayers = null; // {binding, session, projection, order}
+
+function startMediaLayers(session) {
+  xrLayers = null;
+  if (!MEDIA_LAYERS_SUPPORTED || !session.renderState || session.renderState.layers === undefined) return;
+  const projection = renderer.xr.getBaseLayer();
+  if (!projection || typeof XRProjectionLayer === 'undefined' || !(projection instanceof XRProjectionLayer)) return;
+  try {
+    xrLayers = { binding: new XRMediaBinding(session), session, projection, order: '' };
+    try { projection.blendTextureSourceAlpha = true; } catch (e) { /* ignore */ }
+  } catch (e) {
+    console.warn('XRMediaBinding failed', e);
+    xrLayers = null;
+    return;
+  }
+  for (const p of panels.values()) p.attachLayer();
+}
+
+function stopMediaLayers() {
+  for (const p of panels.values()) p.detachLayer();
+  xrLayers = null;
+}
+
+/** Per frame: move/resize layers with their panels, keep them ordered far -> near. */
+function updateMediaLayers() {
+  if (!xrLayers) return;
+  const head = headPosition();
+  const layered = [];
+  for (const p of panels.values()) {
+    if (!p.layer) p.attachLayer();      // e.g. the video just got its first frame
+    if (p.layer) { p.updateLayer(); if (p.layer) layered.push(p); }
+  }
+  layered.sort((a, b) => b.group.position.distanceToSquared(head) - a.group.position.distanceToSquared(head));
+  const order = layered.map(p => p.id + ':' + (p.layer ? 1 : 0)).join(',');
+  const changed = order !== xrLayers.order || layered.some(p => p.layerFresh);
+  if (changed) {
+    xrLayers.order = order;
+    layered.forEach(p => { p.layerFresh = false; });
+    xrLayers.session.updateRenderState({ layers: [...layered.map(p => p.layer), xrLayers.projection] });
+  }
+}
+
+function renderModeLabel() {
+  if (!renderer.xr.isPresenting) return '';
+  if (xrLayers) return xrLayers.failed ? ' · vrstvy: chyba (' + xrLayers.failed + ')' : ' · vrstvy: ano';
+  return ' · vrstvy: ne';
+}
 
 class Panel {
   constructor(id) {
@@ -182,6 +241,7 @@ class Panel {
 
   setVideo(slot) {
     this.slot = slot;
+    if (xrLayers) { this.attachLayer(); if (this.layer) { this.updateAspect(); return; } }
     const v = videos[slot];
     if (v && v.texture) {
       this.material.map = v.texture;
@@ -203,7 +263,64 @@ class Panel {
     }
   }
 
-  setHover(on) { this.frame.visible = on; }
+  setHover(on) { this.hovered = on; this.updateFrame(); }
+  setTwoHand(on) { this.twoHanded = on; this.updateFrame(); }
+  updateFrame() {
+    this.frame.visible = !!(this.hovered || this.twoHanded);
+    this.frame.material.color.set(this.twoHanded ? 0x22c55e : 0x3b82f6);
+  }
+
+  // --- WebXR media layer -------------------------------------------------
+  /** Show the window via a compositor quad layer (if possible); the mesh then only punches a hole. */
+  attachLayer() {
+    this.detachLayer();
+    const v = videos[this.slot];
+    if (!xrLayers || this.layerFailed || !v || !v.video.videoWidth) return false;
+    try {
+      this.layer = xrLayers.binding.createQuadLayer(v.video, {
+        space: renderer.xr.getReferenceSpace(),
+        layout: 'mono',
+        transform: this.layerTransform(),
+        width: this.width,
+        height: this.height,
+      });
+      this.layerVideo = v.video;
+      this.layerFresh = true;
+    } catch (e) {
+      console.warn('createQuadLayer failed, using texture', e);
+      xrLayers.failed = String(e && e.message || e);
+      this.layerFailed = true;
+      this.layer = null;
+      return false;
+    }
+    this.content.material = HOLE_MATERIAL;
+    return true;
+  }
+
+  detachLayer() {
+    if (this.layer) {
+      try { this.layer.destroy && this.layer.destroy(); } catch (e) { /* ignore */ }
+    }
+    this.layer = null;
+    this.layerVideo = null;
+    this.content.material = this.material;
+  }
+
+  layerTransform() {
+    this.group.updateMatrixWorld(true);
+    const p = this.content.getWorldPosition(new THREE.Vector3());
+    const q = this.content.getWorldQuaternion(new THREE.Quaternion());
+    return new XRRigidTransform({ x: p.x, y: p.y, z: p.z }, { x: q.x, y: q.y, z: q.z, w: q.w });
+  }
+
+  updateLayer() {
+    if (!this.layer) return;
+    const v = videos[this.slot];
+    if (!v || v.video !== this.layerVideo) { this.attachLayer(); return; }
+    this.layer.transform = this.layerTransform();
+    this.layer.width = this.width;
+    this.layer.height = this.height;
+  }
 
   restoreLayout() {
     let saved = null;
@@ -239,6 +356,7 @@ class Panel {
   }
 
   dispose() {
+    this.detachLayer();
     this.saveLayout();
     scene.remove(this.group);
     for (const m of [this.content, this.title]) {
@@ -321,7 +439,7 @@ const menu = {
     ctx.fillText('Okna z Macu' + (macName ? ' · ' + macName : ''), 40, 56);
     ctx.font = '28px system-ui, sans-serif';
     ctx.fillStyle = '#9aa7b4';
-    ctx.fillText(ellipsize(ctx, statusText + ` · vybráno ${selectedIds().length}/${maxWindows}`, W - 80), 40, 110);
+    ctx.fillText(ellipsize(ctx, statusText + ` · vybráno ${selectedIds().length}/${maxWindows} · v${CLIENT_VERSION}` + renderModeLabel(), W - 80), 40, 110);
 
     const start = this.page * this.rows;
     const list = windows.slice(start, start + this.rows);
@@ -607,6 +725,15 @@ for (let i = 0; i < 2; i++) {
   c.addEventListener('disconnected', () => { state.source = null; endTwoHand(state); });
   c.addEventListener('selectstart', () => {
     const h = state.pointer.hover;
+    // Second hand while the other hand already holds a window: grab that window with both hands,
+    // even if this ray points beside it (natural when grabbing a window by its two edges).
+    const other = controllers.find(o => o !== state);
+    const otherPanel = other && heldPanel(other);
+    if (otherPanel && (!h || !h.panel || h.panel === otherPanel)) {
+      state.triggerPanel = otherPanel;
+      maybeStartTwoHand();
+      return;
+    }
     const r = state.pointer.press(0);
     if (r === 'grab') { state.pointer.startGrab(c); state.grabByTrigger = true; }
     if (r && h && h.panel && (r === 'grab' || h.kind === 'content')) {
@@ -621,6 +748,14 @@ for (let i = 0; i < 2; i++) {
     state.pointer.release(rayFromController(c));
   });
   c.addEventListener('squeezestart', () => {
+    const h = state.pointer.hover;
+    const other = controllers.find(o => o !== state);
+    const otherPanel = other && heldPanel(other);
+    if (otherPanel && (!h || !h.panel || h.panel === otherPanel)) {
+      state.gripPanel = otherPanel;
+      maybeStartTwoHand();
+      return;
+    }
     if (state.pointer.startGrab(c)) {
       state.gripPanel = state.pointer.grab.panel;
       maybeStartTwoHand();
@@ -655,6 +790,7 @@ function maybeStartTwoHand() {
   const pa = a.c.getWorldPosition(new THREE.Vector3());
   const pb = b.c.getWorldPosition(new THREE.Vector3());
   const mid = pa.clone().add(pb).multiplyScalar(0.5);
+  panel.setTwoHand(true);
   twoHand = {
     panel, a, b,
     d0: Math.max(pa.distanceTo(pb), 0.05),
@@ -667,6 +803,7 @@ function maybeStartTwoHand() {
 function endTwoHand(state) {
   if (!twoHand || (twoHand.a !== state && twoHand.b !== state)) return false;
   twoHand.panel.saveLayout();
+  twoHand.panel.setTwoHand(false);
   // The other hand keeps holding its button, but should not start clicking or grabbing.
   const other = twoHand.a === state ? twoHand.b : twoHand.a;
   other.pointer.cancelMouse();
@@ -1009,8 +1146,22 @@ async function setupXR() {
   enterBtn.disabled = false;
   enterBtn.addEventListener('click', async () => {
     try {
-      const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor'] });
+      const session = await navigator.xr.requestSession('immersive-vr', {
+        optionalFeatures: MEDIA_LAYERS_SUPPORTED ? ['local-floor', 'layers'] : ['local-floor'],
+      });
+      if (MEDIA_LAYERS_SUPPORTED) {
+        // Panels are composited by the system; the 3D scene only holds title bars and pointers.
+        renderer.xr.setFramebufferScaleFactor(1.0);
+        renderer.xr.setFoveation(1.0);
+      } else {
+        // Fallback (video textures): full resolution at the edges of the view too.
+        renderer.xr.setFramebufferScaleFactor(1.0);
+        renderer.xr.setFoveation(0);
+      }
       await renderer.xr.setSession(session);
+      startMediaLayers(session);
+      session.addEventListener('end', stopMediaLayers);
+      setStatus(statusText.replace(/ · vrstvy:.*$/, ''));
       // Re-place panels around the user once the real head pose is known.
       setTimeout(() => {
         if (menu.open) menu.toggle(true);
@@ -1029,6 +1180,7 @@ renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.1);
   updateVideoTextures();
   if (renderer.xr.isPresenting) updateControllers(dt);
+  if (renderer.xr.isPresenting) updateMediaLayers();
   renderer.render(scene, camera);
 });
 
@@ -1037,4 +1189,5 @@ connect();
 
 // Expose a little state for debugging / automated tests.
 window.vrd = { get panels() { return panels; }, get slots() { return slots; }, get windows() { return windows; }, menu, send, camera,
-  controllers, maybeStartTwoHand, updateTwoHand, endTwoHand, get twoHand() { return twoHand; } };
+  controllers, maybeStartTwoHand, updateTwoHand, endTwoHand, get twoHand() { return twoHand; },
+  setXrLayersForTest(v) { xrLayers = v; }, updateMediaLayers };

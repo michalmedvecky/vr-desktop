@@ -57,7 +57,7 @@ Mac (VRDesktop.app, menu bar)                          Quest (prohlížeč, WebX
 | Pravé tlačítko | A / X |
 | Scroll | páčka, když míříš na okno |
 | Přesun okna | grip (prostředníček) na okně, nebo spoušť na liště okna |
-| Zvětšit / zmenšit oběma rukama | obě spouště (nebo oba gripy) na okně a roztáhnout / stáhnout ruce. Spouště stiskni zhruba současně (do 0,2 s), jinak se první stisk bere jako klik |
+| Zvětšit / zmenšit oběma rukama | chyť okno jednou rukou (spoušť nebo grip), pak stiskni spoušť nebo grip druhou rukou (stačí mířit vedle okna) a roztáhni / stáhni ruce. Okraj okna zezelená. |
 | Blíž / dál | při držení gripu páčka nahoru / dolů |
 | Větší / menší | při držení gripu páčka doprava / doleva |
 | Seznam oken (výběr) | B / Y |
@@ -65,6 +65,10 @@ Mac (VRDesktop.app, menu bar)                          Quest (prohlížeč, WebX
 | Psaní | Bluetooth klávesnice spárovaná s Questem. Ctrl i Cmd fungují jako Cmd. |
 
 Rozmístění panelů si prohlížeč pamatuje (podle aplikace a názvu okna).
+
+Obsah oken vykresluje přímo kompozitor Questu (WebXR media layers), takže text je ostrý
+a nebliká. V seznamu oken (B/Y) je vidět verze klienta a „vrstvy: ano/ne“. Kdyby okna byla
+černá, přidej do adresy `?nolayers` (např. `https://…:8443/?nolayers`) a pošli mi, co vidíš.
 
 ### Přes vlastní server (stálá adresa, platný certifikát)
 
