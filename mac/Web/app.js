@@ -11,6 +11,7 @@ const METERS_PER_POINT = 1 / 1000; // default panel width: 1000 pt wide window -
 const DEFAULT_DISTANCE = 1.4;
 const TITLE_H = 0.06;
 const MOVE_INTERVAL_MS = 16;     // mouse-move throttle
+const TWO_HAND_WINDOW_MS = 200;  // second trigger within this time = two-handed grab, not a click
 
 // ---------------------------------------------------------------------------
 // DOM / status
@@ -35,6 +36,10 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
 renderer.xr.setFramebufferScaleFactor(1.2); // a bit sharper text on Quest 2
+// three.js defaults to maximum fixed foveated rendering, which renders the edges of the view at
+// lower resolution: text there shimmers and becomes unreadable. Text panels need full resolution.
+renderer.xr.setFoveation(0);
+const MAX_ANISOTROPY = renderer.capabilities.getMaxAnisotropy();
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -418,6 +423,27 @@ class Pointer {
     this.lastMove = 0;
     this.lastUV = null;
     this.scrollAcc = { x: 0, y: 0 };
+    // XR only: the mouse-down is held back briefly so that pressing both triggers on a window
+    // (two-handed move/resize) does not click into it.
+    this.deferDown = false;
+    this.pendingDown = null; // {panel, uv, button, time}
+  }
+
+  /** Send a held-back mouse-down now (the user is clicking/dragging, not resizing). */
+  flushDown() {
+    const p = this.pendingDown;
+    if (!p) return;
+    this.pendingDown = null;
+    this.sendMouse(p.panel, p.uv, 'down', p.button);
+  }
+
+  /** Abort any click/drag in progress without leaving a button stuck on the Mac. */
+  cancelMouse() {
+    if (this.pendingDown) { this.pendingDown = null; this.dragPanel = null; return; }
+    if (this.dragPanel) {
+      if (this.lastUV) this.sendMouse(this.dragPanel, this.lastUV, 'up', this.dragButton);
+      this.dragPanel = null;
+    }
   }
 
   /** Raycast against interactive meshes. ray: THREE.Ray in world space. */
@@ -439,7 +465,12 @@ class Pointer {
 
     // Mouse move / drag
     const now = performance.now();
-    if (this.dragPanel) {
+    if (this.pendingDown) {
+      const p = this.pendingDown;
+      const uv = this.uvOnPanel(p.panel, ray);
+      const moved = uv && Math.hypot(uv.x - p.uv.x, uv.y - p.uv.y) > 0.01;
+      if (moved || now - p.time > TWO_HAND_WINDOW_MS) this.flushDown();
+    } else if (this.dragPanel) {
       const uv = this.uvOnPanel(this.dragPanel, ray);
       if (uv && now - this.lastMove > MOVE_INTERVAL_MS) {
         this.sendMouse(this.dragPanel, uv, 'move');
@@ -486,13 +517,18 @@ class Pointer {
     if (h.kind === 'content') {
       this.dragPanel = h.panel;
       this.dragButton = button;
-      this.sendMouse(h.panel, h.uv, 'down', button);
+      if (this.deferDown && button === 0) {
+        this.pendingDown = { panel: h.panel, uv: { x: h.uv.x, y: h.uv.y }, button, time: performance.now() };
+      } else {
+        this.sendMouse(h.panel, h.uv, 'down', button);
+      }
       return true;
     }
     return false;
   }
 
   release(ray) {
+    if (this.pendingDown) this.flushDown(); // quick press + release = click
     if (this.dragPanel) {
       const uv = this.uvOnPanel(this.dragPanel, ray) || this.lastUV;
       if (uv) this.sendMouse(this.dragPanel, uv, 'up', this.dragButton);
@@ -565,21 +601,92 @@ for (let i = 0; i < 2; i++) {
   const dot = new THREE.Mesh(new THREE.SphereGeometry(0.006, 12, 8), new THREE.MeshBasicMaterial({ color: 0xffffff }));
   dot.visible = false;
   scene.add(dot);
-  const state = { c, line, dot, pointer: new Pointer('xr' + i), source: null, buttons: [], squeezing: false };
+  const state = { c, line, dot, pointer: new Pointer('xr' + i), source: null, buttons: [], triggerPanel: null, gripPanel: null };
+  state.pointer.deferDown = true;
   c.addEventListener('connected', e => { state.source = e.data; });
-  c.addEventListener('disconnected', () => { state.source = null; });
+  c.addEventListener('disconnected', () => { state.source = null; endTwoHand(state); });
   c.addEventListener('selectstart', () => {
+    const h = state.pointer.hover;
     const r = state.pointer.press(0);
     if (r === 'grab') { state.pointer.startGrab(c); state.grabByTrigger = true; }
+    if (r && h && h.panel && (r === 'grab' || h.kind === 'content')) {
+      state.triggerPanel = h.panel;
+      maybeStartTwoHand();
+    }
   });
   c.addEventListener('selectend', () => {
+    state.triggerPanel = null;
+    if (endTwoHand(state)) return;
     if (state.grabByTrigger) { state.pointer.endGrab(); state.grabByTrigger = false; }
     state.pointer.release(rayFromController(c));
   });
-  c.addEventListener('squeezestart', () => { state.pointer.startGrab(c); });
-  c.addEventListener('squeezeend', () => { state.pointer.endGrab(); });
+  c.addEventListener('squeezestart', () => {
+    if (state.pointer.startGrab(c)) {
+      state.gripPanel = state.pointer.grab.panel;
+      maybeStartTwoHand();
+    }
+  });
+  c.addEventListener('squeezeend', () => {
+    state.gripPanel = null;
+    if (endTwoHand(state)) return;
+    state.pointer.endGrab();
+  });
   scene.add(c);
   controllers.push(state);
+}
+
+// ---------------------------------------------------------------------------
+// Two-handed grab: both controllers hold the same window (triggers and/or grips).
+// Moving the controllers apart/together resizes it, moving both moves it.
+// ---------------------------------------------------------------------------
+let twoHand = null; // {panel, a, b, d0, w0, offset}
+const heldPanel = s => s.triggerPanel || s.gripPanel;
+
+function maybeStartTwoHand() {
+  const [a, b] = controllers;
+  if (twoHand || !a || !b) return;
+  const panel = heldPanel(a);
+  if (!panel || panel !== heldPanel(b)) return;
+  for (const s of [a, b]) {
+    s.pointer.cancelMouse();
+    s.pointer.grab = null;       // stop one-handed grab without saving
+    s.grabByTrigger = false;
+  }
+  const pa = a.c.getWorldPosition(new THREE.Vector3());
+  const pb = b.c.getWorldPosition(new THREE.Vector3());
+  const mid = pa.clone().add(pb).multiplyScalar(0.5);
+  twoHand = {
+    panel, a, b,
+    d0: Math.max(pa.distanceTo(pb), 0.05),
+    w0: panel.width,
+    offset: panel.group.position.clone().sub(mid),
+  };
+}
+
+/** Returns true if `state` was part of a two-handed grab (which is now over). */
+function endTwoHand(state) {
+  if (!twoHand || (twoHand.a !== state && twoHand.b !== state)) return false;
+  twoHand.panel.saveLayout();
+  // The other hand keeps holding its button, but should not start clicking or grabbing.
+  const other = twoHand.a === state ? twoHand.b : twoHand.a;
+  other.pointer.cancelMouse();
+  other.pointer.grab = null;
+  other.suppressUntilRelease = true;
+  twoHand = null;
+  return true;
+}
+
+function updateTwoHand() {
+  if (!twoHand) return;
+  const t = twoHand;
+  const pa = t.a.c.getWorldPosition(new THREE.Vector3());
+  const pb = t.b.c.getWorldPosition(new THREE.Vector3());
+  const scale = pa.distanceTo(pb) / t.d0;
+  t.panel.width = THREE.MathUtils.clamp(t.w0 * scale, 0.2, 6);
+  t.panel.layout();
+  const mid = pa.add(pb).multiplyScalar(0.5);
+  t.panel.group.position.copy(mid).add(t.offset);
+  t.panel.faceUser();
 }
 
 function rayFromController(c) {
@@ -588,7 +695,9 @@ function rayFromController(c) {
 }
 
 function updateControllers(dt) {
+  updateTwoHand();
   for (const s of controllers) {
+    if (s.suppressUntilRelease && !heldPanel(s)) s.suppressUntilRelease = false;
     if (!s.source) { s.dot.visible = false; continue; }
     const ray = rayFromController(s.c);
     const h = s.pointer.update(ray);
@@ -599,7 +708,10 @@ function updateControllers(dt) {
     const gp = s.source.gamepad;
     if (!gp) continue;
     const sx = gp.axes[2] || 0, sy = gp.axes[3] || 0;
-    if (s.pointer.grab) {
+    const inTwoHand = twoHand && (twoHand.a === s || twoHand.b === s);
+    if (inTwoHand || s.suppressUntilRelease) {
+      // handled by updateTwoHand / waiting for the button to be released
+    } else if (s.pointer.grab) {
       s.pointer.updateGrab(s.c, sx, sy, dt);
     } else if (Math.abs(sy) > 0.15 || Math.abs(sx) > 0.15) {
       // Thumbstick over a window scrolls it (stick up = scroll up).
@@ -707,9 +819,12 @@ function makeVideoTexture(video) {
   // VideoTexture (not Texture): three.js then uploads with texImage2D using the real video size.
   const texture = new THREE.VideoTexture(video);
   texture.colorSpace = THREE.SRGBColorSpace;
-  texture.minFilter = THREE.LinearFilter;
+  // Mipmaps + anisotropic filtering: without them, parts of a panel seen at a steep angle or
+  // from a distance (minified) alias and flicker.
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
   texture.magFilter = THREE.LinearFilter;
-  texture.generateMipmaps = false;
+  texture.generateMipmaps = true;
+  texture.anisotropy = MAX_ANISOTROPY;
   return texture;
 }
 
@@ -921,4 +1036,5 @@ setupXR();
 connect();
 
 // Expose a little state for debugging / automated tests.
-window.vrd = { get panels() { return panels; }, get slots() { return slots; }, get windows() { return windows; }, menu, send, camera };
+window.vrd = { get panels() { return panels; }, get slots() { return slots; }, get windows() { return windows; }, menu, send, camera,
+  controllers, maybeStartTwoHand, updateTwoHand, endTwoHand, get twoHand() { return twoHand; } };

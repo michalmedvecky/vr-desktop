@@ -57,6 +57,7 @@ Mac (VRDesktop.app, menu bar)                          Quest (prohlížeč, WebX
 | Pravé tlačítko | A / X |
 | Scroll | páčka, když míříš na okno |
 | Přesun okna | grip (prostředníček) na okně, nebo spoušť na liště okna |
+| Zvětšit / zmenšit oběma rukama | obě spouště (nebo oba gripy) na okně a roztáhnout / stáhnout ruce. Spouště stiskni zhruba současně (do 0,2 s), jinak se první stisk bere jako klik |
 | Blíž / dál | při držení gripu páčka nahoru / dolů |
 | Větší / menší | při držení gripu páčka doprava / doleva |
 | Seznam oken (výběr) | B / Y |
