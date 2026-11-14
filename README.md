@@ -65,6 +65,12 @@ Mac (VRDesktop.app, menu bar)                          Quest (prohlížeč, WebX
 
 Rozmístění panelů si prohlížeč pamatuje (podle aplikace a názvu okna).
 
+### Přes vlastní server (stálá adresa, platný certifikát)
+
+Webového klienta a signalizaci můžeš provozovat na vlastním Kubernetes clusteru s veřejnou IP
+a certifikátem Let's Encrypt. Quest pak otevírá `https://vr.example.com/#<kód>` bez varování
+o certifikátu. Video jde dál přímo z Macu do Questu v lokální síti. Návod: [k8s/README.md](k8s/README.md).
+
 ### Bez brýlí
 
 Stejnou adresu jde otevřít i v Chrome na počítači: panely se zobrazí ve 3D a ovládají se myší.
@@ -87,6 +93,9 @@ Hodí se na rychlou kontrolu, že streamování funguje.
   `prototype`.
 * Webový klient bez Macu: `pip install aiortc aiohttp && python tools/fake_mac.py`, pak
   `https://localhost:8443`. Simuluje Mac s testovacími okny a vypisuje přijatý vstup.
+* Relay server: `cd server && npm ci && npm test`, lokálně `npm start` (port 8080). Simulovaný Mac
+  přes relay: `python tools/fake_mac.py --relay http://localhost:8080 <kód>`, pak
+  `http://localhost:8080/#<kód>`.
 
 ## Další kroky
 

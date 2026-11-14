@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VR Desktop</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0f1317; color: #e8edf2; font: 15px/1.4 system-ui, sans-serif; overflow: hidden; }
+  canvas { display: block; }
+  #overlay { position: fixed; top: 12px; left: 12px; right: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; pointer-events: none; }
+  #overlay > * { pointer-events: auto; }
+  button { font: inherit; padding: 10px 18px; border-radius: 10px; border: 0; background: #3b82f6; color: white; cursor: pointer; }
+  button.secondary { background: #2a323b; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { padding: 8px 12px; border-radius: 10px; background: rgba(0,0,0,.45); }
+  #help { position: fixed; bottom: 12px; left: 12px; right: 12px; color: #9aa7b4; font-size: 13px; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="overlay">
+  <button id="enter" disabled>Vstoupit do VR</button>
+  <button id="menu" class="secondary">Okna</button>
+  <span id="status">Načítám…</span>
+</div>
+<div id="help">
+  VR: spoušť = klik a tažení · grip na okně = chytit a přesunout (páčka nahoru/dolů = blíž/dál, doleva/doprava = menší/větší) ·
+  páčka nad oknem = scroll · A/X = pravé tlačítko · B/Y = seznam oken · klávesnice přes Bluetooth píše do okna.
+  Na počítači: klik/tažení myší, kolečko = scroll, tažení za lištu = přesun.
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

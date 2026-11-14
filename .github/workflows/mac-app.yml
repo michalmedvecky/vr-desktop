@@ -1,0 +1,81 @@
+name: Build Mac app
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: mac/.build
+          key: spm-${{ runner.os }}-${{ hashFiles('mac/Package.swift', 'mac/Package.resolved') }}
+
+      - name: Build VRDesktop.app
+        run: mac/scripts/build-app.sh
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Playwright (headless Chromium)
+        run: |
+          cd tools && npm init -y >/dev/null && npm install playwright@1.48.2 >/dev/null
+          npx playwright install chromium
+
+      - name: End-to-end test (app serves client, WebRTC + data channel connect)
+        run: |
+          mac/build/VRDesktop.app/Contents/MacOS/VRDesktop > app.log 2>&1 &
+          PID=$!
+          for i in $(seq 1 20); do
+            curl -sk https://localhost:8443/ | grep -q "VR Desktop" && break
+            sleep 1
+          done
+          node tools/e2e.js https://localhost:8443/ || (cat app.log; exit 1)
+          kill $PID || true
+          cat app.log
+
+      - name: End-to-end test via the relay server (server/)
+        run: |
+          (cd server && npm ci && PORT=18080 node server.js > ../relay.log 2>&1 &)
+          ROOM=CiRoomCode_0123456789abcdefXYZ
+          defaults write com.github.michalmedvecky.vrdesktop relayServer http://127.0.0.1:18080
+          defaults write com.github.michalmedvecky.vrdesktop relayRoom "$ROOM"
+          mac/build/VRDesktop.app/Contents/MacOS/VRDesktop > app-relay.log 2>&1 &
+          PID=$!
+          for i in $(seq 1 30); do grep -q "host connected" relay.log && break; sleep 1; done
+          cat relay.log
+          node tools/e2e.js "http://127.0.0.1:18080/#$ROOM" || (cat app-relay.log; exit 1)
+          kill $PID || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VRDesktop-mac
+          path: mac/build/VRDesktop.zip
+
+      - name: Publish "prototype" pre-release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete prototype --yes --cleanup-tag || true
+          gh release create prototype mac/build/VRDesktop.zip \
+            --prerelease --target "$GITHUB_SHA" \
+            --title "Prototyp (${GITHUB_REF_NAME} @ ${GITHUB_SHA::7})" \
+            --notes "Automaticky sestaveno z větve ${GITHUB_REF_NAME}. Návod: README.md"

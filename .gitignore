@@ -1,0 +1,9 @@
+.DS_Store
+mac/.build/
+mac/build/
+mac/.swiftpm/
+*.xcodeproj/xcuserdata/
+__pycache__/
+tools/node_modules/
+tools/package*.json
+server/node_modules/
