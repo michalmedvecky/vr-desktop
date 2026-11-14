@@ -23,6 +23,24 @@ Offer obsahuje:
 Mac na každý slot připojí stálou video stopu. Výběr jiných oken jen přepne, které okno do slotu
 teče, takže se nikdy znovu nevyjednává. Preferovaný kodek je H.264.
 
+### Varianta: přes relay server (`server/`)
+
+Když stránku servíruje veřejný relay (Kubernetes), adresa nese párovací kód:
+`https://<server>/#<room>` (`room` = 16–128 znaků `[A-Za-z0-9_-]`).
+
+* Mac: `wss://<server>/ws?role=host&room=<room>` (trvalé spojení, server ho pinguje každých 25 s)
+* Quest: `wss://<server>/ws?role=client&room=<room>` (jen na dobu výměny offer/answer)
+
+```json
+Quest → server:  {"type":"offer","sdp":"…"}
+server → Mac:    {"type":"offer","sdp":"…","from":"<client-id>"}
+Mac → server:    {"type":"answer","sdp":"…","to":"<client-id>"}   nebo {"type":"error","message":"…","to":"…"}
+server → Quest:  {"type":"answer","sdp":"…"}
+server → Quest:  {"type":"error","message":"Mac není připojený k serveru"}
+```
+
+Offer i answer jsou stejné jako u `POST /offer` (non-trickle). Média jdou přímo Mac ↔ Quest.
+
 ## 2. Data channel `ctl`
 
 JSON zprávy. Řídicí zprávy mají pole `type`, vstupní pole `t`.

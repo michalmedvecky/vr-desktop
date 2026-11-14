@@ -757,6 +757,44 @@ function waitForIce(pc, timeoutMs) {
   });
 }
 
+// Signaling. Two modes:
+//  * local: the page is served by the Mac app itself -> POST /offer to the Mac.
+//  * relay: the page is served by the public relay server (server/, Kubernetes) and the URL
+//    carries the Mac's pairing code: https://vr.example.com/#<room>. The offer goes through the
+//    relay's WebSocket to the Mac; the video itself still flows directly Mac -> Quest.
+const ROOM = (location.hash.match(/^#([A-Za-z0-9_-]{16,128})$/) || [])[1] || null;
+
+async function exchangeOffer(offerSdp) {
+  return ROOM ? relayExchange(offerSdp) : localExchange(offerSdp);
+}
+
+async function localExchange(offerSdp) {
+  const r = await fetch('/offer', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sdp: offerSdp }),
+  });
+  if (r.status === 404) throw new Error('v adrese chybí párovací kód (#…) z aplikace na Macu');
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return (await r.json()).sdp;
+}
+
+function relayExchange(offerSdp) {
+  return new Promise((resolve, reject) => {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/ws?role=client&room=${encodeURIComponent(ROOM)}`);
+    const done = (fn, v) => { clearTimeout(timer); try { ws.close(); } catch (e) { /* ignore */ } fn(v); };
+    const timer = setTimeout(() => done(reject, new Error('Mac neodpověděl')), 15000);
+    ws.onopen = () => ws.send(JSON.stringify({ type: 'offer', sdp: offerSdp }));
+    ws.onmessage = e => {
+      const m = JSON.parse(e.data);
+      if (m.type === 'answer') done(resolve, m.sdp);
+      else if (m.type === 'error') done(reject, new Error(m.message));
+    };
+    ws.onerror = () => done(reject, new Error('relay server nedostupný'));
+  });
+}
+
 let reconnectTimer = null;
 function scheduleReconnect(ms = 2000) {
   if (reconnectTimer) return;
@@ -810,13 +848,7 @@ async function connect() {
   try {
     await conn.setLocalDescription(await conn.createOffer());
     await waitForIce(conn, 2000);
-    const r = await fetch('/offer', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sdp: conn.localDescription.sdp }),
-    });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const { sdp } = await r.json();
+    const sdp = await exchangeOffer(conn.localDescription.sdp);
     if (pc !== conn) return;
     await conn.setRemoteDescription({ type: 'answer', sdp });
   } catch (err) {

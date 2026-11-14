@@ -5,7 +5,8 @@ Serves mac/Web over HTTPS and answers POST /offer like the real Swift app: it st
 that arrives on the "ctl" data channel.
 
     pip install aiortc aiohttp
-    python tools/fake_mac.py           # https://localhost:8443
+    python tools/fake_mac.py                                  # https://localhost:8443
+    python tools/fake_mac.py --relay http://localhost:8080 <room>  # host on the relay server
 """
 import asyncio, json, os, ssl, subprocess, sys, tempfile, time
 from fractions import Fraction
@@ -52,6 +53,10 @@ pcs = set()
 
 async def offer(request):
     params = await request.json()
+    return web.json_response({"sdp": await answer_offer(params["sdp"])})
+
+
+async def answer_offer(offer_sdp):
     pc = RTCPeerConnection()
     pcs.add(pc)
 
@@ -81,13 +86,26 @@ async def offer(request):
             elif m.get("type") == "listWindows":
                 ch.send(json.dumps({"type": "windows", "windows": WINDOWS}))
 
-    await pc.setRemoteDescription(RTCSessionDescription(sdp=params["sdp"], type="offer"))
+    await pc.setRemoteDescription(RTCSessionDescription(sdp=offer_sdp, type="offer"))
     for i, t in enumerate(pc.getTransceivers()):
         if t.kind == "video":
             t.direction = "sendonly"
             t.sender.replaceTrack(PatternTrack(i))
     await pc.setLocalDescription(await pc.createAnswer())
-    return web.json_response({"sdp": pc.localDescription.sdp})
+    return pc.localDescription.sdp
+
+
+async def relay_host(server, room):
+    """Act like the Mac app's RelayClient: connect to the relay as host and answer offers."""
+    import aiohttp
+    url = server.replace("https://", "wss://").replace("http://", "ws://").rstrip("/") + f"/ws?role=host&room={room}"
+    async with aiohttp.ClientSession() as s:
+        async with s.ws_connect(url) as ws:
+            print("relay host connected", url, flush=True)
+            async for msg in ws:
+                m = json.loads(msg.data)
+                if m.get("type") == "offer":
+                    await ws.send_str(json.dumps({"type": "answer", "sdp": await answer_offer(m["sdp"]), "to": m["from"]}))
 
 
 async def log(request):
@@ -116,4 +134,9 @@ app.router.add_get("/", static)
 app.router.add_get("/{name}", static)
 
 if __name__ == "__main__":
-    web.run_app(app, port=int(sys.argv[1]) if len(sys.argv) > 1 else 8443, ssl_context=make_ssl())
+    # python tools/fake_mac.py [port]                      -> local mode (HTTPS, POST /offer)
+    # python tools/fake_mac.py --relay <server-url> <room> -> host on a relay server (server/)
+    if len(sys.argv) > 1 and sys.argv[1] == "--relay":
+        asyncio.run(relay_host(sys.argv[2], sys.argv[3]))
+    else:
+        web.run_app(app, port=int(sys.argv[1]) if len(sys.argv) > 1 else 8443, ssl_context=make_ssl())

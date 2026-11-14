@@ -51,6 +51,19 @@ jobs:
           kill $PID || true
           cat app.log
 
+      - name: End-to-end test via the relay server (server/)
+        run: |
+          (cd server && npm ci && PORT=18080 node server.js > ../relay.log 2>&1 &)
+          ROOM=CiRoomCode_0123456789abcdefXYZ
+          defaults write com.github.michalmedvecky.vrdesktop relayServer http://127.0.0.1:18080
+          defaults write com.github.michalmedvecky.vrdesktop relayRoom "$ROOM"
+          mac/build/VRDesktop.app/Contents/MacOS/VRDesktop > app-relay.log 2>&1 &
+          PID=$!
+          for i in $(seq 1 30); do grep -q "host connected" relay.log && break; sleep 1; done
+          cat relay.log
+          node tools/e2e.js "http://127.0.0.1:18080/#$ROOM" || (cat app-relay.log; exit 1)
+          kill $PID || true
+
       - uses: actions/upload-artifact@v4
         with:
           name: VRDesktop-mac

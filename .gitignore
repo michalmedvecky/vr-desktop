@@ -6,3 +6,4 @@ mac/.swiftpm/
 __pycache__/
 tools/node_modules/
 tools/package*.json
+server/node_modules/

@@ -35,6 +35,29 @@ final class HostController: ObservableObject {
 
     private let catalog = WindowCatalog()
     private let server = WebServer()
+    private let relay = RelayClient()
+
+    // Public relay server (Kubernetes). Stored in UserDefaults:
+    //   defaults write com.github.michalmedvecky.vrdesktop relayServer https://vr.example.com
+    @Published var relayServer = UserDefaults.standard.string(forKey: "relayServer") ?? ""
+    @Published var relayState = "vypnuto"
+    @Published private(set) var roomCode: String = {
+        if let c = UserDefaults.standard.string(forKey: "relayRoom"), c.count >= 16 { return c }
+        let c = RelayClient.newRoomCode()
+        UserDefaults.standard.set(c, forKey: "relayRoom")
+        return c
+    }()
+    /// Link to open in the Quest browser when using the relay.
+    var relayLink: String? {
+        guard let base = normalizedRelayURL else { return nil }
+        return base.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/#" + roomCode
+    }
+    private var normalizedRelayURL: URL? {
+        var s = relayServer.trimmingCharacters(in: .whitespaces)
+        guard !s.isEmpty else { return nil }
+        if !s.contains("://") { s = "https://" + s }
+        return URL(string: s)
+    }
     private let injector = InputInjector()
     private var session: StreamSession?
     private var refreshTimer: Timer?
@@ -47,6 +70,13 @@ final class HostController: ObservableObject {
             guard let self else { return reply(nil) }
             self.newSession().handleOffer(sdp, completion: reply)
         }
+        relay.onOffer = { [weak self] sdp, reply in
+            guard let self else { return reply(nil) }
+            self.newSession().handleOffer(sdp, completion: reply)
+        }
+        relay.onStateChange = { [weak self] state in self?.relayState = state }
+        applyRelay()
+
         do {
             try server.start()
         } catch {
@@ -57,6 +87,23 @@ final class HostController: ObservableObject {
             Task { @MainActor in await self?.refreshWindows() }
         }
         Task { await refreshWindows() }
+    }
+
+    func setRelayServer(_ value: String) {
+        relayServer = value.trimmingCharacters(in: .whitespaces)
+        UserDefaults.standard.set(relayServer, forKey: "relayServer")
+        applyRelay()
+    }
+
+    /// New pairing code: links shared earlier stop working.
+    func regenerateRoomCode() {
+        roomCode = RelayClient.newRoomCode()
+        UserDefaults.standard.set(roomCode, forKey: "relayRoom")
+        applyRelay()
+    }
+
+    private func applyRelay() {
+        if let url = normalizedRelayURL { relay.start(serverURL: url, room: roomCode) } else { relay.stop() }
     }
 
     func refreshWindows() async {
@@ -131,6 +178,7 @@ final class HostController: ObservableObject {
 
 struct MenuContent: View {
     @EnvironmentObject var host: HostController
+    @State private var serverField = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -147,6 +195,33 @@ struct MenuContent: View {
             if host.urls.isEmpty {
                 Text("Mac není připojený k Wi-Fi ani Ethernetu.").font(.caption).foregroundStyle(.red)
             }
+
+            DisclosureGroup("Přes server (Kubernetes)") {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        TextField("https://vr.example.com", text: $serverField)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { host.setRelayServer(serverField) }
+                        Button("Uložit") { host.setRelayServer(serverField) }
+                    }
+                    Text("Server: \(host.relayState)").font(.caption).foregroundStyle(.secondary)
+                    if let link = host.relayLink {
+                        Text(link).font(.system(.caption, design: .monospaced)).textSelection(.enabled).lineLimit(2)
+                        HStack {
+                            Button("Kopírovat odkaz") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(link, forType: .string)
+                            }
+                            Button("Nový kód") { host.regenerateRoomCode() }
+                        }
+                        Text("Odkaz obsahuje tajný párovací kód. Kdo ho zná, vidí a ovládá sdílená okna.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.top, 4)
+            }
+            .font(.caption)
+            .onAppear { serverField = host.relayServer }
 
             if !host.screenAccess {
                 Label("Povol „Nahrávání obrazovky“ v Nastavení > Soukromí a zabezpečení, pak aplikaci restartuj.",
