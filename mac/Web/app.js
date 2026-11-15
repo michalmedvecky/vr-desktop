@@ -38,7 +38,7 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
 const MAX_ANISOTROPY = renderer.capabilities.getMaxAnisotropy();
-const CLIENT_VERSION = '0.4';
+const CLIENT_VERSION = '0.5';
 // Window content is shown with WebXR media layers when the browser supports them (Quest Browser):
 // the compositor samples the video directly at display resolution, which is far sharper and
 // steadier than drawing a video texture into the 3D scene and resampling it again.
@@ -150,8 +150,12 @@ function updateMediaLayers() {
   if (!xrLayers) return;
   const head = headPosition();
   const layered = [];
+  const now = performance.now();
   for (const p of panels.values()) {
-    if (!p.layer) p.attachLayer();      // e.g. the video just got its first frame
+    const size = p.width.toFixed(3) + 'x' + p.height.toFixed(3);
+    if (size !== p.lastSize) { p.lastSize = size; if (!p.layer) p.resizeAt = now; }
+    const settling = p.resizeAt && now - p.resizeAt < 400;
+    if (!p.layer && !settling) p.attachLayer();   // first frame arrived / resize finished
     if (p.layer) { p.updateLayer(); if (p.layer) layered.push(p); }
   }
   layered.sort((a, b) => b.group.position.distanceToSquared(head) - a.group.position.distanceToSquared(head));
@@ -245,18 +249,19 @@ class Panel {
 
   setVideo(slot) {
     this.slot = slot;
-    if (xrLayers) { this.attachLayer(); if (this.layer) { this.updateAspect(); return; } }
+    // The texture material is always kept ready: it is shown whenever no media layer is active
+    // (unsupported, not yet created, or while the panel is being resized).
     const v = videos[slot];
     if (v && v.texture) {
       this.material.map = v.texture;
       this.material.color.set(0xffffff);
-      this.material.needsUpdate = true;
       this.updateAspect();
     } else {
       this.material.map = null;
       this.material.color.set(0x222a33);
-      this.material.needsUpdate = true;
     }
+    this.material.needsUpdate = true;
+    if (xrLayers) this.attachLayer(true);
   }
 
   updateAspect() {
@@ -283,6 +288,15 @@ class Panel {
     this.detachLayer();
     const v = videos[this.slot];
     if (!xrLayers || this.layerFailed || !v || !v.video.videoWidth) return false;
+    // Safety net: never create layers in a tight loop.
+    const t = performance.now();
+    xrLayers.created = (xrLayers.created || []).filter(x => t - x < 60000);
+    if (xrLayers.created.length >= 40) {
+      xrLayers.failed = 'příliš mnoho vrstev, používám textury';
+      this.layerFailed = true;
+      return false;
+    }
+    xrLayers.created.push(t);
     try {
       this.layerW = this.width;
       this.layerH = this.height;
@@ -326,13 +340,20 @@ class Panel {
   updateLayer() {
     if (!this.layer) return;
     const v = videos[this.slot];
-    if (!v || v.video !== this.layerVideo) { this.attachLayer(); return; }
-    this.layer.transform = this.layerTransform();
-    // The Quest browser does not apply width/height changes to an existing quad layer, so the
-    // layer stayed at its old size while the panel (the hole it shows through) changed: only part
-    // of the window was visible. Recreate the layer whenever its size changes (throttled).
+    if (!v || v.video !== this.layerVideo) { this.attachLayer(true); return; }
+    // The Quest browser does not apply width/height changes to an existing quad layer, and
+    // recreating layers continuously while resizing froze the headset. So while the panel is
+    // being resized it is drawn as a texture; one new layer is created once the size settles.
     const resized = Math.abs(this.width - this.layerW) > 0.002 || Math.abs(this.height - this.layerH) > 0.002;
-    if (resized && performance.now() - this.layerAt > 120) this.attachLayer(true);
+    if (resized) {
+      retiredLayers.push(this.layer);
+      this.layer = null;
+      this.layerVideo = null;
+      this.content.material = this.material;
+      this.resizeAt = performance.now();
+      return;
+    }
+    this.layer.transform = this.layerTransform();
   }
 
   restoreLayout() {
@@ -817,7 +838,6 @@ function endTwoHand(state) {
   if (!twoHand || (twoHand.a !== state && twoHand.b !== state)) return false;
   twoHand.panel.saveLayout();
   twoHand.panel.setTwoHand(false);
-  if (twoHand.panel.layer) twoHand.panel.layerAt = 0; // final size: recreate the layer right away
   // The other hand keeps holding its button, but should not start clicking or grabbing.
   const other = twoHand.a === state ? twoHand.b : twoHand.a;
   other.pointer.cancelMouse();

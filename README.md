@@ -81,6 +81,13 @@ o certifikátu. Video jde dál přímo z Macu do Questu v lokální síti. Návo
 Stejnou adresu jde otevřít i v Chrome na počítači: panely se zobrazí ve 3D a ovládají se myší.
 Hodí se na rychlou kontrolu, že streamování funguje.
 
+### Oprávnění, která vydrží aktualizace (jednorázově)
+
+macOS váže oprávnění na podpis aplikace. Aby je nebylo nutné po každé nové verzi přidávat
+znovu, CI podepisuje aplikaci stálým certifikátem uloženým v GitHub secrets. Ten se vytvoří
+jednou na Macu: `bash mac/scripts/setup-signing.sh` (nebo stáhni skript z GitHubu). Po první
+podepsané verzi povol oprávnění naposledy.
+
 ## Řešení problémů
 
 * **Panel je šedý/černý**: zkontroluj oprávnění Nahrávání obrazovky a aplikaci restartuj.
