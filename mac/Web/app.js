@@ -38,7 +38,7 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
 const MAX_ANISOTROPY = renderer.capabilities.getMaxAnisotropy();
-const CLIENT_VERSION = '0.3';
+const CLIENT_VERSION = '0.4';
 // Window content is shown with WebXR media layers when the browser supports them (Quest Browser):
 // the compositor samples the video directly at display resolution, which is far sharper and
 // steadier than drawing a video texture into the 3D scene and resampling it again.
@@ -122,6 +122,7 @@ const HOLE_MATERIAL = new THREE.ShaderMaterial({
 });
 
 let xrLayers = null; // {binding, session, projection, order}
+const retiredLayers = []; // replaced layers, destroyed once the new render state is set
 
 function startMediaLayers(session) {
   xrLayers = null;
@@ -160,6 +161,9 @@ function updateMediaLayers() {
     xrLayers.order = order;
     layered.forEach(p => { p.layerFresh = false; });
     xrLayers.session.updateRenderState({ layers: [...layered.map(p => p.layer), xrLayers.projection] });
+    // The new render state applies from the next frame; destroy the replaced layers a bit later.
+    const old = retiredLayers.splice(0);
+    if (old.length) setTimeout(() => old.forEach(l => { try { l.destroy && l.destroy(); } catch (e) { /* ignore */ } }), 500);
   }
 }
 
@@ -272,11 +276,17 @@ class Panel {
 
   // --- WebXR media layer -------------------------------------------------
   /** Show the window via a compositor quad layer (if possible); the mesh then only punches a hole. */
-  attachLayer() {
+  attachLayer(keepOld = false) {
+    // keepOld: the previous layer stays in the render state until the new one replaces it
+    // (destroyed in updateMediaLayers), so a resize doesn't flash.
+    if (keepOld && this.layer) { retiredLayers.push(this.layer); this.layer = null; }
     this.detachLayer();
     const v = videos[this.slot];
     if (!xrLayers || this.layerFailed || !v || !v.video.videoWidth) return false;
     try {
+      this.layerW = this.width;
+      this.layerH = this.height;
+      this.layerAt = performance.now();
       this.layer = xrLayers.binding.createQuadLayer(v.video, {
         space: renderer.xr.getReferenceSpace(),
         layout: 'mono',
@@ -318,8 +328,11 @@ class Panel {
     const v = videos[this.slot];
     if (!v || v.video !== this.layerVideo) { this.attachLayer(); return; }
     this.layer.transform = this.layerTransform();
-    this.layer.width = this.width;
-    this.layer.height = this.height;
+    // The Quest browser does not apply width/height changes to an existing quad layer, so the
+    // layer stayed at its old size while the panel (the hole it shows through) changed: only part
+    // of the window was visible. Recreate the layer whenever its size changes (throttled).
+    const resized = Math.abs(this.width - this.layerW) > 0.002 || Math.abs(this.height - this.layerH) > 0.002;
+    if (resized && performance.now() - this.layerAt > 120) this.attachLayer(true);
   }
 
   restoreLayout() {
@@ -804,6 +817,7 @@ function endTwoHand(state) {
   if (!twoHand || (twoHand.a !== state && twoHand.b !== state)) return false;
   twoHand.panel.saveLayout();
   twoHand.panel.setTwoHand(false);
+  if (twoHand.panel.layer) twoHand.panel.layerAt = 0; // final size: recreate the layer right away
   // The other hand keeps holding its button, but should not start clicking or grabbing.
   const other = twoHand.a === state ? twoHand.b : twoHand.a;
   other.pointer.cancelMouse();
@@ -821,7 +835,7 @@ function updateTwoHand() {
   const scale = pa.distanceTo(pb) / t.d0;
   t.panel.width = THREE.MathUtils.clamp(t.w0 * scale, 0.2, 6);
   t.panel.layout();
-  const mid = pa.add(pb).multiplyScalar(0.5);
+  const mid = pa.add(pb).multiplyScalar(0.5);  // (layer size follows in updateMediaLayers)
   t.panel.group.position.copy(mid).add(t.offset);
   t.panel.faceUser();
 }
