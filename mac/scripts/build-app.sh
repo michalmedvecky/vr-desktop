@@ -37,10 +37,18 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc signature (no Apple Developer account needed).
-codesign --force --sign - "$APP/Contents/Frameworks/WebRTC.framework"
-codesign --force --sign - "$APP"
+# Code signature. macOS ties the Screen Recording / Accessibility permissions to the signature:
+# with an ad-hoc signature (-) every build looks like a new app and the permissions must be
+# granted again. With a stable certificate (SIGN_IDENTITY, a self-signed one is enough) they
+# survive updates. CI sets SIGN_IDENTITY when the MAC_SIGNING_P12 secret exists.
+IDENTITY=${SIGN_IDENTITY:--}
+KEYCHAIN_ARGS=()
+if [ -n "${SIGN_KEYCHAIN:-}" ]; then KEYCHAIN_ARGS=(--keychain "$SIGN_KEYCHAIN"); fi
+codesign --force --sign "$IDENTITY" "${KEYCHAIN_ARGS[@]}" "$APP/Contents/Frameworks/WebRTC.framework"
+codesign --force --sign "$IDENTITY" "${KEYCHAIN_ARGS[@]}" \
+  --identifier com.github.michalmedvecky.vrdesktop "$APP"
 codesign --verify --verbose "$APP"
+codesign --display --requirements - "$APP" 2>&1 | grep designated || true
 
 (cd build && ditto -c -k --keepParent VRDesktop.app VRDesktop.zip)
 echo "Built $(pwd)/build/VRDesktop.app"
