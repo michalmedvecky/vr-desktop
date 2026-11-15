@@ -44,8 +44,8 @@ PLIST
 IDENTITY=${SIGN_IDENTITY:--}
 KEYCHAIN_ARGS=()
 if [ -n "${SIGN_KEYCHAIN:-}" ]; then KEYCHAIN_ARGS=(--keychain "$SIGN_KEYCHAIN"); fi
-codesign --force --sign "$IDENTITY" "${KEYCHAIN_ARGS[@]}" "$APP/Contents/Frameworks/WebRTC.framework"
-codesign --force --sign "$IDENTITY" "${KEYCHAIN_ARGS[@]}" \
+codesign --force --sign "$IDENTITY" ${KEYCHAIN_ARGS[@]+"${KEYCHAIN_ARGS[@]}"} "$APP/Contents/Frameworks/WebRTC.framework"
+codesign --force --sign "$IDENTITY" ${KEYCHAIN_ARGS[@]+"${KEYCHAIN_ARGS[@]}"} \
   --identifier com.github.michalmedvecky.vrdesktop "$APP"
 codesign --verify --verbose "$APP"
 codesign --display --requirements - "$APP" 2>&1 | grep designated || true
