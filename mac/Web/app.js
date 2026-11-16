@@ -38,22 +38,23 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
 const MAX_ANISOTROPY = renderer.capabilities.getMaxAnisotropy();
-const CLIENT_VERSION = '0.6';
+const CLIENT_VERSION = '0.7';
 // Window content is shown with WebXR media layers when the browser supports them (Quest Browser):
 // the compositor samples the video directly at display resolution, which is far sharper and
 // steadier than drawing a video texture into the 3D scene and resampling it again.
 // Add ?nolayers to the URL to force the old video-texture rendering.
 const MEDIA_LAYERS_SUPPORTED = typeof XRMediaBinding !== 'undefined' && !new URLSearchParams(location.search).has('nolayers');
-// Size of the media layer relative to its panel. 1.0 per the WebXR Layers spec; adjustable from
-// the window menu (and ?layerscale=) in case the browser interprets quad sizes differently,
-// which shows up as only a cutout of the window being visible.
-const LAYER_SCALES = [1, 0.5, 2];
+// Size of the media layer relative to its panel. The Quest browser draws a quad layer twice as
+// large as width/height (it treats them as half extents), which showed only an enlarged cutout of
+// the window, so the default is 0.5. Adjustable from the window menu (and ?layerscale=).
+const LAYER_SCALES = [0.5, 1, 2];
+const LAYER_SCALE_KEY = 'vrd:layerscale2';   // new key: ignore values saved by v0.6
 let layerScale = parseFloat(new URLSearchParams(location.search).get('layerscale') || '') ||
-  parseFloat((() => { try { return localStorage.getItem('vrd:layerscale'); } catch (e) { return null; } })() || '') || 1;
+  parseFloat((() => { try { return localStorage.getItem(LAYER_SCALE_KEY); } catch (e) { return null; } })() || '') || 0.5;
 function cycleLayerScale() {
   const i = LAYER_SCALES.indexOf(layerScale);
   layerScale = LAYER_SCALES[(i + 1) % LAYER_SCALES.length];
-  try { localStorage.setItem('vrd:layerscale', String(layerScale)); } catch (e) { /* ignore */ }
+  try { localStorage.setItem(LAYER_SCALE_KEY, String(layerScale)); } catch (e) { /* ignore */ }
   for (const p of panels.values()) if (p.layer) p.attachLayer(true);
 }
 document.body.appendChild(renderer.domElement);
@@ -164,6 +165,13 @@ function updateMediaLayers() {
   const layered = [];
   const now = performance.now();
   for (const p of panels.values()) {
+    // A media layer shows a "play" icon instead of the picture while its video element is
+    // paused (e.g. autoplay was refused, or the stream stalled), so keep the videos playing.
+    const v = videos[p.slot];
+    if (v && v.video.paused && v.video.srcObject && (!v.playTry || now - v.playTry > 1000)) {
+      v.playTry = now;
+      v.video.play().catch(() => {});
+    }
     const size = p.width.toFixed(3) + 'x' + p.height.toFixed(3);
     if (size !== p.lastSize) { p.lastSize = size; if (!p.layer) p.resizeAt = now; }
     const settling = p.resizeAt && now - p.resizeAt < 400;
@@ -300,6 +308,8 @@ class Panel {
     this.detachLayer();
     const v = videos[this.slot];
     if (!xrLayers || this.layerFailed || !v || !v.video.videoWidth) return false;
+    // Only hand a playing video to the compositor; until then the texture shows the window.
+    if (v.video.paused || v.video.readyState < 2) return false;
     // Safety net: never create layers in a tight loop.
     const t = performance.now();
     xrLayers.created = (xrLayers.created || []).filter(x => t - x < 60000);
