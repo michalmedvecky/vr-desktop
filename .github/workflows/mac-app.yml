@@ -39,7 +39,16 @@ jobs:
           security create-keychain -p "$KC_PW" "$KC"
           security set-keychain-settings -lut 3600 "$KC"
           security unlock-keychain -p "$KC_PW" "$KC"
-          security import "$RUNNER_TEMP/sign.p12" -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          # OpenSSL 3 writes PKCS#12 with AES/PBKDF2, which macOS `security` can't read
+          # ("MAC verification failed"). Re-pack it in the legacy format first.
+          OSSL=$(brew --prefix openssl@3 2>/dev/null)/bin/openssl
+          [ -x "$OSSL" ] || OSSL=openssl
+          "$OSSL" pkcs12 -in "$RUNNER_TEMP/sign.p12" -passin env:P12_PASSWORD -nodes -out "$RUNNER_TEMP/all.pem"
+          "$OSSL" pkcs12 -export -legacy -in "$RUNNER_TEMP/all.pem" -name "VR Desktop Self-Signed" \
+            -passout env:P12_PASSWORD -out "$RUNNER_TEMP/legacy.p12"
+          rm "$RUNNER_TEMP/all.pem"
+          security import "$RUNNER_TEMP/legacy.p12" -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/legacy.p12"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PW" "$KC" >/dev/null
           security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
           rm "$RUNNER_TEMP/sign.p12"

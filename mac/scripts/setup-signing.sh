@@ -28,7 +28,10 @@ CNF
 PW=$(openssl rand -hex 16)
 openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 7300 -config cs.cnf \
   -keyout key.pem -out cert.pem 2>/dev/null
-openssl pkcs12 -export -inkey key.pem -in cert.pem -name "VR Desktop Self-Signed" \
+# macOS `security` only reads the legacy PKCS#12 format; OpenSSL 3 needs -legacy for it.
+LEGACY=""
+if openssl version | grep -q "^OpenSSL 3"; then LEGACY="-legacy"; fi
+openssl pkcs12 -export $LEGACY -inkey key.pem -in cert.pem -name "VR Desktop Self-Signed" \
   -out sign.p12 -passout "pass:$PW"
 base64 -i sign.p12 | tr -d '\n' > sign.b64
 
