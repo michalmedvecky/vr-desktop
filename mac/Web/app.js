@@ -38,7 +38,7 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
 const MAX_ANISOTROPY = renderer.capabilities.getMaxAnisotropy();
-const CLIENT_VERSION = '0.7';
+const CLIENT_VERSION = '0.8';
 // Window content is shown with WebXR media layers when the browser supports them (Quest Browser):
 // the compositor samples the video directly at display resolution, which is far sharper and
 // steadier than drawing a video texture into the 3D scene and resampling it again.
@@ -495,7 +495,8 @@ const menu = {
     ctx.fillText('Okna z Macu' + (macName ? ' · ' + macName : ''), 40, 56);
     ctx.font = '28px system-ui, sans-serif';
     ctx.fillStyle = '#9aa7b4';
-    ctx.fillText(ellipsize(ctx, statusText + ` · vybráno ${selectedIds().length}/${maxWindows} · v${CLIENT_VERSION}` + renderModeLabel(), W - 80), 40, 110);
+    const diag = videoDiagnostics();
+    ctx.fillText(ellipsize(ctx, statusText + ` · vybráno ${selectedIds().length}/${maxWindows} · v${CLIENT_VERSION}` + renderModeLabel() + (diag ? ' · ' + diag : ''), W - 80), 40, 110);
 
     const start = this.page * this.rows;
     const list = windows.slice(start, start + this.rows);
@@ -543,6 +544,7 @@ const menu = {
     btn(24, '◀ Zpět', this.page > 0);
     btn(244, 'Další ▶', this.page < pages - 1);
     btn(W - 224, 'Zavřít', true);
+    if (renderer.xr.isPresenting) btn(W - 444, 'Opustit VR', true);
     ctx.fillStyle = '#9aa7b4';
     ctx.font = '26px system-ui, sans-serif';
     ctx.fillText(`${this.page + 1}/${pages}`, 470, fy + 44);
@@ -558,6 +560,7 @@ const menu = {
       if (x < 224) return { action: 'prev' };
       if (x > 244 && x < 444) return { action: 'next' };
       if (x > W - 224) return { action: 'close' };
+      if (renderer.xr.isPresenting && x > W - 444 && x < W - 244) return { action: 'exitvr' };
       return null;
     }
     const row = Math.floor((y - this.HEADER) / this.ROW);
@@ -579,6 +582,7 @@ const menu = {
     if (h.action === 'prev') this.page = Math.max(0, this.page - 1);
     else if (h.action === 'next') this.page = Math.min(pages - 1, this.page + 1);
     else if (h.action === 'close') this.toggle(false);
+    else if (h.action === 'exitvr') { this.toggle(false); const s = renderer.xr.getSession(); if (s) s.end().catch(() => {}); return; }
     else if (h.action === 'layerscale') cycleLayerScale();
     else if (h.action === 'toggle') {
       const sel = selectedIds();
@@ -590,6 +594,8 @@ const menu = {
 };
 menu.init();
 menuBtn.addEventListener('click', () => menu.toggle());
+// Keep the video status in the menu header current.
+setInterval(() => { if (menu.open) menu.redraw(); }, 1000);
 
 // ---------------------------------------------------------------------------
 // Pointer logic shared by XR controllers and the desktop mouse
@@ -1032,13 +1038,37 @@ function makeVideoTexture(video) {
   return texture;
 }
 
+function videoBox() {
+  let box = document.getElementById('videos');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'videos';
+    box.style.cssText = 'position:fixed;left:0;bottom:0;width:8px;height:2px;display:flex;opacity:0.01;pointer-events:none;z-index:-1;overflow:hidden';
+    document.body.appendChild(box);
+  }
+  return box;
+}
+
+/** "1▶ 2⏸" etc. for the menu, to tell from a screenshot which videos play. */
+function videoDiagnostics() {
+  return videos.map((v, i) => {
+    if (!v || !v.video.srcObject) return null;
+    const st = v.video.paused ? '⏸' : v.video.readyState < 2 ? '…' : '▶';
+    return `${i + 1}${st}${v.video.videoWidth ? v.video.videoWidth + '×' + v.video.videoHeight : ''}`;
+  }).filter(Boolean).join(' ');
+}
+
 function ensureVideo(slot, track) {
   let v = videos[slot];
   if (!v) {
     const video = document.createElement('video');
     video.muted = true;
     video.playsInline = true;
-    video.autoplay = true;
+    // No `autoplay`: the browser pauses muted autoplaying videos it considers off-screen, and
+    // a video outside the document counts as such. That froze some windows (Quest's media layer
+    // then shows a "play" icon). The videos live in a tiny, nearly transparent box on the page
+    // and are started with play().
+    videoBox().appendChild(video);
     v = { video, texture: null, frames: -1, w: 0, h: 0 };
     // A new window in this slot can have a different size. WebGL textures have a fixed size,
     // so make a fresh texture whenever the video resolution changes.
