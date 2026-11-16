@@ -38,12 +38,24 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.xr.enabled = true;
 renderer.xr.setReferenceSpaceType('local-floor');
 const MAX_ANISOTROPY = renderer.capabilities.getMaxAnisotropy();
-const CLIENT_VERSION = '0.5';
+const CLIENT_VERSION = '0.6';
 // Window content is shown with WebXR media layers when the browser supports them (Quest Browser):
 // the compositor samples the video directly at display resolution, which is far sharper and
 // steadier than drawing a video texture into the 3D scene and resampling it again.
 // Add ?nolayers to the URL to force the old video-texture rendering.
 const MEDIA_LAYERS_SUPPORTED = typeof XRMediaBinding !== 'undefined' && !new URLSearchParams(location.search).has('nolayers');
+// Size of the media layer relative to its panel. 1.0 per the WebXR Layers spec; adjustable from
+// the window menu (and ?layerscale=) in case the browser interprets quad sizes differently,
+// which shows up as only a cutout of the window being visible.
+const LAYER_SCALES = [1, 0.5, 2];
+let layerScale = parseFloat(new URLSearchParams(location.search).get('layerscale') || '') ||
+  parseFloat((() => { try { return localStorage.getItem('vrd:layerscale'); } catch (e) { return null; } })() || '') || 1;
+function cycleLayerScale() {
+  const i = LAYER_SCALES.indexOf(layerScale);
+  layerScale = LAYER_SCALES[(i + 1) % LAYER_SCALES.length];
+  try { localStorage.setItem('vrd:layerscale', String(layerScale)); } catch (e) { /* ignore */ }
+  for (const p of panels.values()) if (p.layer) p.attachLayer(true);
+}
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -305,8 +317,8 @@ class Panel {
         space: renderer.xr.getReferenceSpace(),
         layout: 'mono',
         transform: this.layerTransform(),
-        width: this.width,
-        height: this.height,
+        width: this.width * layerScale,
+        height: this.height * layerScale,
       });
       this.layerVideo = v.video;
       this.layerFresh = true;
@@ -430,7 +442,7 @@ function syncPanels() {
 // Window list menu (in VR and 2D)
 // ---------------------------------------------------------------------------
 const menu = {
-  rows: 12,
+  rows: 11,
   page: 0,
   open: false,
   mesh: null,
@@ -497,6 +509,15 @@ const menu = {
       ctx.font = '30px system-ui, sans-serif';
       ctx.fillText(dc && dc.readyState === 'open' ? 'Žádná okna k dispozici.' : 'Čekám na spojení s Macem…', 40, this.HEADER + 40);
     }
+    // layer scale (diagnostics / calibration), only while media layers are active
+    if (xrLayers) {
+      const ly = H - this.FOOTER - this.ROW;
+      ctx.fillStyle = '#2f3a46';
+      roundRect(ctx, 24, ly + 6, W - 48, this.ROW - 12, 14); ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = '26px system-ui, sans-serif';
+      ctx.fillText(`Měřítko obrazu ve vrstvě: ×${layerScale} (klikni pro změnu, když vidíš jen výřez okna)`, 44, ly + this.ROW / 2);
+    }
     // footer: paging + close
     const fy = H - this.FOOTER;
     const pages = Math.max(1, Math.ceil(windows.length / this.rows));
@@ -522,6 +543,7 @@ const menu = {
   hit(uv) {
     const W = 1024, H = 1100;
     const x = uv.x * W, y = (1 - uv.y) * H;
+    if (xrLayers && y > H - this.FOOTER - this.ROW && y <= H - this.FOOTER) return { action: 'layerscale' };
     if (y > H - this.FOOTER) {
       if (x < 224) return { action: 'prev' };
       if (x > 244 && x < 444) return { action: 'next' };
@@ -547,6 +569,7 @@ const menu = {
     if (h.action === 'prev') this.page = Math.max(0, this.page - 1);
     else if (h.action === 'next') this.page = Math.min(pages - 1, this.page + 1);
     else if (h.action === 'close') this.toggle(false);
+    else if (h.action === 'layerscale') cycleLayerScale();
     else if (h.action === 'toggle') {
       const sel = selectedIds();
       if (sel.includes(h.id)) setSelection(sel.filter(x => x !== h.id));
